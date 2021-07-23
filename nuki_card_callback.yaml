@@ -1,0 +1,620 @@
+########################
+# Nuki Card v8.1       #
+########################
+
+#######################################################################################################################
+###                                                                                                                 ###
+### Automations                                                                                                     ###
+###                                                                                                                 ###
+#######################################################################################################################
+
+automation:
+  - id: "nuki_card_callback"
+    alias: Nuki Card Callback
+    description: Automation for the Nuki doorlock
+    trigger:
+      - platform: event
+        id: 'trigger_event_template_reloaded'
+        event_type:
+          - event_template_reloaded
+      - platform: webhook
+        id: 'trigger_nuki_bridge_webhook'
+        webhook_id: !secret nuki_bridge_webhook
+      - platform: state
+        id: 'trigger_nuki_door_sensor_polled'
+        entity_id: sensor.nuki_door_sensor_state
+      - platform: state
+        id: 'trigger_nuki_lock_sensor_polled'
+        entity_id: sensor.nuki_lock_sensor_state
+      - platform: state
+        id: 'trigger_nuki_bridge_callback_list'
+        entity_id: sensor.nuki_bridge_callback_list
+    condition: []
+    mode: single
+    action:
+      - choose:
+          - conditions: >
+              {{ trigger.id == 'trigger_nuki_bridge_webhook' }}
+            sequence:
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_door_sensor
+                data:
+                  value: >
+                    {% set my_state = {1: 'deactivated', 2: 'closed', 3: 'open', 4: 'unknown', 5: 'calibrating'} %}
+                    {{ my_state[trigger.json.doorsensorState] }}
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_lock_sensor
+                data:
+                  value: >
+                    {% set my_state = {0: 'uncalibrated', 1: 'locked', 2:'unlocking', 3: 'unlocked', 4: 'locking', 5: 'unlatched', 6: "unlocked (lock 'n' go)", 7: 'unlatching', 254: 'motor blocked', 255: 'undefined'} %}
+                    {{ my_state[trigger.json.state] }}
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_last_activity
+                data:
+                  value: >
+                    {{ as_timestamp(now()) | timestamp_custom("%H:%M:%S (%b %d)") }}
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_trigger_id
+                data:
+                  value: >
+                    {{ trigger.id }}
+          - conditions: >
+              {{ trigger.id == 'trigger_nuki_bridge_callback_list' }}
+            sequence:
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_callback_list
+                data:
+                  value: >
+                    {{ states('sensor.nuki_bridge_callback_list')|from_json }}
+              - service: homeassistant.update_entity
+                target:
+                  entity_id: binary_sensor.nuki_bridge_callback
+              - service: script.nuki_bridge_check_callback
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_trigger_id
+                data:
+                  value: >
+                    {{ trigger.id }}
+          - conditions: >
+              {{ trigger.id in ['trigger_event_template_reloaded', 'trigger_nuki_door_sensor_polled', 'trigger_nuki_lock_sensor_polled'] }}
+            sequence:
+              - service: homeassistant.update_entity
+                target:
+                  entity_id: sensor.nuki_bridge_endpoint_list
+              - service: homeassistant.update_entity
+                target:
+                  entity_id: sensor.nuki_bridge_endpoint_info
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_callback_url
+                data:
+                  value: >
+                    {{ states('input_text.nuki_ha_internal_url') | urlencode }}/api/webhook/{{ states('input_text.nuki_bridge_webhook') | urlencode }}
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_door_sensor
+                data:
+                  value: >
+                    {{ states('sensor.nuki_door_sensor_state') }}
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_lock_sensor
+                data:
+                  value: >
+                    {{ states('sensor.nuki_lock_sensor_state') }}
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_last_activity
+                data:
+                  value: >
+                    {{ states('sensor.nuki_last_activity') }}
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.nuki_bridge_trigger_id
+                data:
+                  value: >
+                    {{ trigger.id }}
+        default: []
+
+
+#######################################################################################################################
+###                                                                                                                 ###
+### Input Texts & Numbers                                                                                           ###
+###                                                                                                                 ###
+#######################################################################################################################
+input_text:
+  nuki_bridge_url:
+    name: "Nuki Card (bridge url)"
+    initial: !secret nuki_bridge_url
+  nuki_bridge_token:
+    name: "Nuki Card (bridge token)"
+    initial: !secret nuki_bridge_token
+  nuki_bridge_webhook:
+    name: "Nuki Card (bridge webhook)"
+    initial: !secret nuki_bridge_webhook
+    max: 500
+  nuki_ha_internal_url:
+    name: "Nuki Card (HA internal URL)"
+    initial: !secret nuki_ha_internal_url
+  nuki_bridge_callback_list:
+    name: "Nuki Card (bridge callback list)"
+  nuki_bridge_callback_url:
+    name: "Nuki Card (bridge callback url)"
+    max: 500
+  nuki_bridge_door_sensor:
+    name: "Nuki Card (door sensor)"
+  nuki_bridge_lock_sensor:
+    name: "Nuki Card (lock sensor)"
+  nuki_bridge_last_activity:
+    name: "Nuki Card (last activity)"
+  nuki_bridge_trigger_id:
+    name: "Nuki Card (trigger id)"
+
+
+#######################################################################################################################
+###                                                                                                                 ###
+### Binary sensors                                                                                                  ###
+###                                                                                                                 ###
+#######################################################################################################################
+
+binary_sensor:
+  - platform: template
+    sensors:
+      nuki_door_state:
+        unique_id: nuki_door_state
+        friendly_name: "Nuki Door State"
+        device_class: door
+        value_template: >
+          {{ is_state('input_text.nuki_bridge_door_sensor', 'open') }}
+        availability_template: >
+          {{ (states('input_text.nuki_bridge_door_sensor') in ['open','closed']) or (states('sensor.nuki_door_sensor_state') in ['open','closed']) }}
+        icon_template: >
+          {% set trigdoor = states('input_text.nuki_bridge_door_sensor') %}
+          {% set triglock = states('input_text.nuki_bridge_lock_sensor') %}
+          {% if (trigdoor == 'open') %}
+            mdi:door-open
+          {% elif trigdoor == 'closed' and triglock == 'locked' %}
+            mdi:door-closed-lock
+          {% elif trigdoor == 'closed' and triglock == 'unlocked' %}
+            mdi:door-closed
+          {% else %}
+            mdi:alert-box-outline
+          {% endif %}
+        attribute_templates:
+          trigger_id: >
+            {{ states('input_text.nuki_bridge_trigger_id') }}
+          bridge_callback_id_list: >
+            {% if is_state('binary_sensor.nuki_bridge_callback', 'on') %}
+              configured - ID: {{ states('input_text.nuki_bridge_callback_list') }})
+            {% else %}
+              not configured
+            {% endif %}
+          nuki_id: >
+            {{ states('sensor.nuki_id') }}
+          door_state: >
+            {{ states('input_text.nuki_bridge_door_sensor') }}
+          lock_state: >
+            {{ states('input_text.nuki_bridge_lock_sensor') }}
+          lock_battery: >
+            {{ states('sensor.nuki_lock_battery_level') }}
+          lock_battery_critical: >
+            {{ states('sensor.nuki_lock_battery_critical_state') }}
+          keypad_battery_critical: >
+            {% if states('sensor.nuki_keypad_battery_critical_state') != 'unknown' %}
+              {{ states('sensor.nuki_keypad_battery_critical_state') }}
+            {% else %}
+              not installed 
+            {% endif %}
+          last_activity_callback: >
+            {{ states('input_text.nuki_bridge_last_activity') }}
+          last_activity_polled: >
+            {{ states('sensor.nuki_last_activity') }}
+          door_sensor_polled: >
+            {{ states('sensor.nuki_door_sensor_state') }}
+          lock_sensor_polled: >
+            {{ states('sensor.nuki_lock_sensor_state') }}
+
+      nuki_bridge_callback:
+        unique_id: nuki_bridge_callback
+        friendly_name: "Nuki Bridge Callback"
+        icon_template: mdi:arrow-vertical-lock
+        value_template: >
+          {% if states('sensor.nuki_bridge_callback_list') != 'unknown' %}
+            {% if states('input_text.nuki_bridge_callback_list')|from_json|count == 1 %}
+              on
+            {% else %}
+              off
+            {% endif %}
+          {% else %}
+            off
+          {% endif %}
+        attribute_templates:
+          callback_id_list: >
+            {% if states('sensor.nuki_bridge_callback_list') != 'unknown' %}
+              {{ states('sensor.nuki_bridge_callback_list') }}
+            {% endif %}
+
+
+#######################################################################################################################
+###                                                                                                                 ###
+### Locks                                                                                                           ###
+###                                                                                                                 ###
+#######################################################################################################################
+
+lock:
+  - platform: template
+    name: "Nuki Lock Action"
+    unique_id: nuki_lock_action
+    value_template: >
+      {{ is_state('input_text.nuki_bridge_lock_sensor','locked') }}
+    availability_template: >
+      {{ (states('input_text.nuki_bridge_lock_sensor') in ['locked','unlocked']) or (states('sensor.nuki_lock_sensor_state') in ['locked','unlocked']) }}
+    lock:
+      service: rest_command.nuki_lock_action
+      data:
+        action: 2
+    unlock:
+      service: rest_command.nuki_lock_action
+      data:
+        action: 1
+
+
+#######################################################################################################################
+###                                                                                                                 ###
+### rest commands                                                                                                   ###
+###                                                                                                                 ###
+#######################################################################################################################
+
+rest_command:
+  nuki_lock_action:
+    url: "{{ states('input_text.nuki_bridge_url') }}/lockAction?nukiId={{ states('sensor.nuki_id') }}&action={{ action }}&token={{ states('input_text.nuki_bridge_token') | urlencode }}"
+  nuki_bridge_add_callback:
+    url: "{{ states('input_text.nuki_bridge_url') }}/callback/add?url={{ states('input_text.nuki_bridge_callback_url') }}&token={{ states('input_text.nuki_bridge_token') | urlencode }}"
+  nuki_bridge_del_callback:
+    url: "{{ states('input_text.nuki_bridge_url') }}/callback/remove?id={{ callback_id|int }}&token={{ states('input_text.nuki_bridge_token') | urlencode }}"
+
+
+#######################################################################################################################
+###                                                                                                                 ###
+### scripts                                                                                                         ###
+###                                                                                                                 ###
+#######################################################################################################################
+
+script:
+  nuki_bridge_check_callback:
+    sequence:
+      - service: homeassistant.update_entity
+        target:
+          entity_id: sensor.nuki_bridge_callback_list
+      - service: homeassistant.update_entity
+        target:
+          entity_id: binary_sensor.nuki_bridge_callback
+      - alias: "Add callback to bridge"
+        repeat:
+          while: "{{ states('binary_sensor.nuki_bridge_callback') == 'off' and states('input_text.nuki_bridge_callback_list')|from_json|count == 0 }}"
+          sequence:
+            - service: rest_command.nuki_bridge_add_callback
+            - delay: 5
+            - service: homeassistant.update_entity
+              target:
+                entity_id: sensor.nuki_bridge_callback_list
+            - delay: 5
+            - service: homeassistant.update_entity
+              target:
+                entity_id: binary_sensor.nuki_bridge_callback
+            - service: input_text.set_value
+              target:
+                entity_id: input_text.nuki_bridge_callback_list
+              data:
+                value: >
+                  {{ states('sensor.nuki_bridge_callback_list')|from_json }}
+            - wait_template: "{{ is_state('binary_sensor.nuki_bridge_callback', 'on') and states('input_text.nuki_bridge_callback_list')|from_json|count == 1 }}"
+              timeout: 15
+            - service: persistent_notification.create
+              data:
+                notification_id: "nuki_card_persistent"
+                title: Nuki Card (added callback to bridge)
+                message: >
+                  * [**Script nuki_bridge_check_callback**] ran at {{ as_timestamp(now()) | timestamp_custom("%H:%M:%S (%b %d)") }}
+
+                  * [**Bridge Callback ID:**] "{{ states('input_text.nuki_bridge_callback_list') }}"
+                  
+                  * [**Callback Raw List:**] {{ state_attr('sensor.nuki_bridge_callback_list','callbacks') }}
+      - alias: "Delete callbacks from bridge"
+        repeat:
+          while: "{{ (states('input_text.nuki_bridge_callback_list')|from_json|count > 1) }}"
+          sequence:
+            - service: rest_command.nuki_bridge_del_callback
+              data:
+                callback_id: "{{ (states('input_text.nuki_bridge_callback_list')|from_json)[-1] }}"
+            - delay: 5
+            - service: homeassistant.update_entity
+              target:
+                entity_id: sensor.nuki_bridge_callback_list
+            - delay: 5
+            - service: input_text.set_value
+              target:
+                entity_id: input_text.nuki_bridge_callback_list
+              data:
+                value: >
+                  {{ states('sensor.nuki_bridge_callback_list')|from_json }}
+            - service: homeassistant.update_entity
+              target:
+                entity_id: binary_sensor.nuki_bridge_callback
+            - service: persistent_notification.create
+              data:
+                notification_id: "nuki_card_persistent"
+                title: Nuki Card (deleted callback to bridge)
+                message: >
+                  * [**Script nuki_bridge_check_callback**] ran at {{ as_timestamp(now()) | timestamp_custom("%H:%M:%S (%b %d)") }}
+
+                  * [**Bridge Callback ID:**] "{{ states('input_text.nuki_bridge_callback_list') }}"
+                  
+                  * [**Callback Raw List:**] {{ state_attr('sensor.nuki_bridge_callback_list','callbacks') }}
+
+
+#######################################################################################################################
+###                                                                                                                 ###
+### sensors                                                                                                         ###
+###                                                                                                                 ###
+#######################################################################################################################
+
+sensor:
+  - platform: rest
+    scan_interval: 60
+    resource_template: "{{ states('input_text.nuki_bridge_url') }}/callback/list?&token={{ states('input_text.nuki_bridge_token') | urlencode }}"
+    name: "Nuki Bridge Callback List"
+    force_update: true
+    value_template: >
+      {% set ns = namespace() %}
+      {% set ns.callback_list = [] %}
+      {% if (value_json.callbacks | count) > 0 %}
+        {% set hook = states('input_text.nuki_bridge_callback_url') %}
+        {% for callback in value_json.callbacks %}
+          {% if hook == (callback.url|urlencode) %}
+            {% set ns.callback_list = ns.callback_list + [ callback.id ] %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ ns.callback_list }}
+    json_attributes:
+      - callbacks
+
+  - platform: rest
+    scan_interval: 120
+    resource_template: "{{ states('input_text.nuki_bridge_url') }}/list?&token={{ states('input_text.nuki_bridge_token') | urlencode }}"
+    name: "Nuki Bridge Endpoint List"
+    force_update: false
+    value_template: "OK"
+    json_attributes:
+      - lastKnownState
+      - firmwareVersion
+      - nukiId
+      - name
+
+  - platform: rest
+    scan_interval: 120
+    resource_template: "{{ states('input_text.nuki_bridge_url') }}/info?&token={{ states('input_text.nuki_bridge_token') | urlencode }}"
+    name: "Nuki Bridge Endpoint Info"
+    force_update: false
+    value_template: "OK"
+    json_attributes:
+      - versions
+      - scanResults
+      - wlanConnected
+      - serverConnected
+
+  - platform: template
+    sensors:
+      nuki_device_name:
+        unique_id: nuki_device_name
+        friendly_name: "Nuki Device Name"
+        icon_template: mdi:alphabetical-variant
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_info') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_info','scanResults')[0]['name'] }}
+          {% endif %}
+
+      nuki_bridge_fw_version:
+        unique_id: nuki_bridge_fw_version
+        friendly_name: "Nuki Bridge FW Version"
+        icon_template: mdi:numeric
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_info') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_info','versions')['firmwareVersion'] }}
+          {% endif %}
+
+      nuki_bridge_lock_bt_rssi:
+        unique_id: nuki_bridge_lock_bt_rssi
+        friendly_name: "Nuki Bridge<->Lock BT RSSI"
+        icon_template: mdi:signal-distance-variant
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_info') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_info','scanResults')[0]['rssi'] }}
+          {% endif %}
+
+      nuki_bridge_wifi_connected:
+        unique_id: nuki_bridge_wifi_connected
+        friendly_name: "Nuki Bridge WiFi Connected"
+        icon_template: mdi:wifi-cog
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_info') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_info','wlanConnected') }}
+          {% endif %}
+
+      nuki_bridge_wifi_fw_version:
+        unique_id: nuki_bridge_wifi_fw_version
+        friendly_name: "Nuki Bridge WiFi FW Version"
+        icon_template: mdi:numeric
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_info') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_info','versions')['wifiFirmwareVersion'] }}
+          {% endif %}
+
+      nuki_bridge_cloud_connected:
+        unique_id: nuki_bridge_cloud_connected
+        friendly_name: "Nuki Bridge Cloud Connected"
+        icon_template: mdi:server-network
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_info') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_info','serverConnected') }}
+          {% endif %}
+
+      nuki_bridge_lock_bt_state:
+        unique_id: nuki_bridge_lock_bt_state
+        friendly_name: "Nuki Bridge<->Lock BT State"
+        icon_template: >
+          {% if states('sensor.nuki_bridge_endpoint_info') == "OK" %}
+            {% if state_attr('sensor.nuki_bridge_endpoint_info','scanResults')[0]['paired'] %}
+              mdi:bluetooth-connect
+            {% elif not state_attr('sensor.nuki_bridge_endpoint_info','scanResults')[0]['paired'] %}
+              mdi:bluetooth-off
+            {% else %}
+              mdi:bluetooth-audio
+            {% endif %}
+          {% endif %}
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_info') == "OK" %}
+            {% if state_attr('sensor.nuki_bridge_endpoint_info','scanResults')[0]['paired'] %}
+              connected
+            {% elif not state_attr('sensor.nuki_bridge_endpoint_info','scanResults')[0]['paired'] %}
+              disconnected
+            {% else %}
+              Unknown
+            {% endif %}
+          {% endif %}
+
+      nuki_id:
+        unique_id: nuki_id
+        friendly_name: "Nuki ID"
+        icon_template: mdi:numeric
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_list','nukiId') }}
+          {% endif %}
+
+      nuki_lock_fw_version:
+        unique_id: nuki_lock_fw_version
+        friendly_name: "Nuki Lock FW Version"
+        icon_template: mdi:numeric
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_list','firmwareVersion') }}
+          {% endif %}
+
+      nuki_lock_battery_critical_state:
+        unique_id: nuki_lock_battery_critical_state
+        friendly_name: "Nuki Lock Battery Critical State"
+        icon_template: mdi:battery-alert-variant-outline
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_list','lastKnownState')['batteryCritical'] }}
+          {% endif %}
+
+      nuki_friendly_name:
+        unique_id: nuki_friendly_name
+        friendly_name: "Nuki Friendly Name"
+        icon_template: mdi:numeric
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {{ state_attr('sensor.nuki_bridge_endpoint_list','name') }}
+          {% endif %}
+
+      nuki_last_activity:
+        unique_id: nuki_last_activity
+        friendly_name: "Nuki Last Activity"
+        icon_template: mdi:clock-check-outline
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {{ (as_timestamp(state_attr('sensor.nuki_bridge_endpoint_list','lastKnownState')['timestamp'])) | timestamp_custom("%H:%M:%S (%b %d)") }}
+          {% endif %}
+
+      nuki_lock_battery_level:
+        unique_id: nuki_lock_battery_level
+        friendly_name: "Nuki Lock Battery Level"
+        device_class: "battery"
+        unit_of_measurement: "%"
+        icon_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {% set battery_level = state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['batteryChargeState'] | default(0) | int %}
+            {% set battery_charging = state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['batteryCharging'] %}
+            {% set battery_round = (battery_level / 10) | int * 10 %}
+            {% if battery_round >= 100 and not battery_charging %}
+              mdi:battery
+            {% elif battery_round >= 100 and battery_charging %}
+              mdi:battery-charging
+            {% elif battery_round > 0 and not battery_charging %}
+              mdi:battery-{{ battery_round }}
+            {% elif battery_round > 0 and battery_charging %}
+              mdi:battery-charging-{{ battery_round }}
+            {% else %}
+              mdi:battery-alert-variant-outline
+            {% endif %}
+          {% endif %}
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {% set battery_level = state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['batteryChargeState'] | default(0) | int %}
+            {% if state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['batteryCharging'] %}
+              {{ battery_level }}
+            {% else %}
+              {{ battery_level }}
+            {% endif %}
+          {% endif %}
+
+      nuki_door_sensor_state:
+        unique_id: nuki_door_sensor_state
+        friendly_name: "Nuki Door Sensor State"
+        icon_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {% set door_icon = state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['doorsensorState'] %}
+            {% set lock_icon = state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['state'] %}
+            {% if door_icon == 2 and lock_icon == 3 %}
+              mdi:door-closed
+            {% elif door_icon == 2 and lock_icon == 1 %}
+              mdi:door-closed-lock
+            {% elif door_icon == 3 %}
+              mdi:door-open
+            {% endif %}
+          {% endif %}
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {% set my_state = {1: 'deactivated', 2: 'closed', 3: 'open', 4: 'unknown', 5: 'calibrating'} %}
+            {{ my_state[state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['doorsensorState']] }}
+          {% endif %}
+
+      nuki_lock_sensor_state:
+        unique_id: nuki_lock_sensor_state
+        friendly_name: "Nuki Lock Sensor State"
+        icon_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {% set lock_icon = state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['state'] %}
+            {% if lock_icon == 1 %}
+              mdi:lock-outline
+            {% elif lock_icon == 3 %}
+              mdi:lock-open-outline
+            {% endif %}
+          {% endif %}
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {% set my_state = {0: 'uncalibrated', 1: 'locked', 2:'unlocking', 3: 'unlocked', 4: 'locking', 5: 'unlatched', 6: "unlocked (lock ‘n’ go)", 7: 'unlatching', 254: 'motor blocked', 255: 'undefined'} %}
+            {{ my_state[state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['state']] }}
+          {% endif %}
+
+      nuki_keypad_battery_critical_state:
+        unique_id: nuki_keypad_battery_critical_state
+        friendly_name: "Nuki Keypad Battery Critical State"
+        icon_template: mdi:battery-alert-variant-outline
+        value_template: >
+          {% if states('sensor.nuki_bridge_endpoint_list') == "OK" %}
+            {% if state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['keypadBatteryCritical'] != null %}
+              {{ state_attr('sensor.nuki_bridge_endpoint_list', 'lastKnownState')['keypadBatteryCritical'] }}
+            {% else %}
+              not installed 
+            {% endif %}
+          {% endif %}
